@@ -96,7 +96,7 @@
   <!-- MAVLink connection button -->
   <div class="mavlink-connection-container">
       <label for="MAVLinkConnection">MAVLink Connect:</label>
-      <input type="text" id="mavlink-connect-url" class="input-field" value="ws://127.0.0.1:56781" readonly>
+      <input type="text" id="mavlink-connect-url" class="input-field" value="ws://127.0.0.1:8765" readonly>
       <button id="mavlink-connect-button">Connect</button>
   </div>
 
@@ -115,6 +115,8 @@
   <script type="module">
     // imports
     import { mavlink_store } from './MAVLink/mavlink_store.js';
+
+    let latest_heartbeat_message = null;
 
     // show/hide the OpenAI API key field
     function toggle_openai_api_key_visibility() {
@@ -179,24 +181,99 @@
                 mavlink_disconnect();
             };
 
+
+            ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
             // parse incoming message and forward
             mavlink_ws.onmessage = (msg) => {
                 // sanity check parser has been created
                 if (MAVLink == null) {
                     return;
                 }
+                // add_text_to_debug(msg.data);
+
+                const json_data = JSON.parse(msg.data);
+                // add_text_to_debug("Received: " + json_data.mavpackettype);
+                const mavlink_msg = createMavlinkMsgFromJson(json_data);
+
                 // parse message
-                for (const char of new Uint8Array(msg.data)) {
-                    const mavlink_msg = MAVLink.parseChar(char)
-                    if ((mavlink_msg != null) && (mavlink_msg._id != -1)) {
-                        // got a message with a known ID
-                        mavlink_msg_handler(mavlink_msg);
-                    }
+                if (mavlink_msg) {
+                    mavlink_msg_handler(mavlink_msg);
+                    // add_text_to_debug("done and dusted");
                 }
+                else add_text_to_debug("❌❌❌❌no msg");
+                
             }
+            //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
         }
     }
 
+    // Add this function to convert JSON to MAVLink-compatible format
+    function createMavlinkMsgFromJson(json) {
+        if (!json || !json.mavpackettype) {
+            add_text_to_debug("❌ Invalid message format");
+            return null;
+        }
+        
+        try {
+            // Create a base object that preserves all original fields
+            const result = {
+                ...json,
+                // Add required fields for mavlink_store
+                _id: getMavlinkMessageId(json.mavpackettype),
+                _header: {
+                    srcSystem: 1,  // Default system ID
+                    srcComponent: 1  // Default component ID
+                }
+            };
+            
+            // Special handling for HEARTBEAT messages
+            if (json.mavpackettype === "HEARTBEAT") {
+                // add_text_to_debug("⭐ Received heartbeat message");
+                // Store directly for quick access
+                latest_heartbeat_message = result;
+            }
+            
+            return result;
+        } catch (error) {
+            add_text_to_debug("❌ Error creating MAVLink message: " + error.message);
+            return null;
+        }
+    }
+
+    // Helper function to map common message types to IDs
+    function getMavlinkMessageId(msgType) {
+        if (msgType.toUpperCase() === "HEARTBEAT") {
+            return 0;  // Always use 0 for HEARTBEAT
+        }
+        const messageMap = {
+            "HEARTBEAT": 0,
+            "heartbeat": 0,
+            "SYS_STATUS": 1,
+            "PARAM_VALUE": 22,
+            "GPS_RAW_INT": 24,
+            "ATTITUDE": 30,
+            "GLOBAL_POSITION_INT": 33,
+            "RC_CHANNELS_RAW": 35,
+            "SERVO_OUTPUT_RAW": 36,
+            "MISSION_ITEM": 39,
+            "MISSION_REQUEST": 40,
+            "MISSION_ACK": 47,
+            "GPS_GLOBAL_ORIGIN": 49,
+            "NAV_CONTROLLER_OUTPUT": 62,
+            "RC_CHANNELS": 65,
+            "VFR_HUD": 74,
+            "COMMAND_LONG": 76,
+            "COMMAND_ACK": 77,
+            "ATTITUDE_QUATERNION": 31,
+            "LOCAL_POSITION_NED": 32,
+            "POSITION_TARGET_LOCAL_NED": 85,
+            "POSITION_TARGET_GLOBAL_INT": 87,
+            "STATUSTEXT": 253
+        };
+        
+        return messageMap[msgType] || -1;  // Return -1 for unknown types
+    }
     // disconnect from the vehicle
     function mavlink_disconnect() {
         if (mavlink_ws != null) {
@@ -213,25 +290,27 @@
             return;
         }
 
+
         // store the message in the message store
         mavlink_store.store_message(msg);
 
         switch (msg._id) {
             case 0: // HEARTBEAT
-                //alert("custom mode:" + msg.custom_mode);
-                //alert("Got a heartbeat: " + JSON.stringify(msg));
+                // alert("custom mode:" + msg.custom_mode);
+                // add_text_to_debug("HEARTBEAT message processed in switch statement!");
+                // alert("Got a heartbeat: " + JSON.stringify(msg));
                 break;
             case 1: // SYS_STATUS
-                //alert("Got a system status: " + JSON.stringify(msg));
+                // alert("Got a system status: " + JSON.stringify(msg));
                 break;
             case 24: // GPS_RAW_INT
                 //alert("Got a GPS raw int: " + JSON.stringify(msg));
                 break;
             case 30: // ATTITUDE
-                //alert("Got an attitude: " + JSON.stringify(msg));
+                // alert("Got an attitude: " + JSON.stringify(msg));
                 break;
             case 33: // GLOBAL_POSITION_INT
-                //alert("Got a global position int: " + JSON.stringify(msg));
+                // alert("Got a global position int: " + JSON.stringify(msg));
                 break;
             case 35: // HIGHRES_IMU
                 //alert("Got a high resolution IMU: " + JSON.stringify(msg));
@@ -246,7 +325,7 @@
                 //alert("Got a status text: " + JSON.stringify(msg));
                 break;
             default:
-                //alert("Got a message id: " + JSON.stringify(msg));
+                // alert("Got a message id: " + JSON.stringify(msg));
                 break;
         }
     }
@@ -518,7 +597,7 @@
               // fallthrough
           case "get_vehicle_location_and_yaw":
               // Get the vehicle's current location including latitude, longitude, altitude above sea level and altitude above home
-              // fallthrough
+              return get_vehicle_location_and_yaw();
           case "send_mavlink_set_position_target_global_int":
               // Send a mavlink SET_POSITION_TARGET_GLOBAL_INT message to the vehicle.  This message is the preferred way to command a vehicle to fly to a specified location or to fly at a specfied velocity
               // fallthrough
@@ -528,6 +607,7 @@
           case "get_location_plus_offset":
               // Calculate the latitude and longitude given an existing latitude and longitude and distances (in meters) North and East
               // fallthrough
+            //   return get_location_plus_offset();
           case "send_mavlink_command_int":
               // Send a mavlink COMMAND_INT message to the vehicle.  Available commands including changing the flight mode, arming, disarming, takeoff and commanding the vehicle to fly to a specific location
               // fallthrough
@@ -640,6 +720,40 @@
       };
       return new Date().toLocaleString('en-US', options);
   }
+
+  function get_vehicle_location_and_yaw() {
+    // Get the latest GLOBAL_POSITION_INT message
+    const position_msg = mavlink_store.get_latest_message(33);
+    add_text_to_debug(position_msg);
+    if (!position_msg) {
+        return JSON.stringify({
+            error: "No position information available"
+        });
+    }
+    
+    // Get the latest ATTITUDE message for yaw (if available)
+    const attitude_msg = mavlink_store.get_latest_message(30);
+    
+    // Convert lat/lon from int32 (degE7) to decimal degrees
+    const lat = position_msg.lat / 10000000.0;
+    const lon = position_msg.lon / 10000000.0;
+    
+    // Create the response object
+    const response = {
+        latitude: lat,
+        longitude: lon,
+        altitude_msl: position_msg.alt / 1000.0,         // mm to meters
+        altitude_relative: position_msg.relative_alt / 1000.0,  // mm to meters
+        heading: position_msg.hdg / 100.0                // centi-degrees to degrees
+    };
+    
+    // Add attitude information if available
+    if (attitude_msg) {
+        response.yaw = attitude_msg.yaw * (180 / Math.PI);  // radians to degrees
+    }
+    
+    return JSON.stringify(response);
+}
 
   class EventHandler extends EventEmitter {
         constructor(client) {
