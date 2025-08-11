@@ -64,7 +64,7 @@
     <div class="input-container">
         <button id="sendButton">Rec</button>
         <input type="text" id="userInput" class="input-field" placeholder="Type a message...">
-        <button class="send-button" onclick="send_message()">Send</button>
+        <button class="send-button" id="sendMessageButton" >Send</button>
     </div>
   </div>
 
@@ -96,7 +96,7 @@
   <!-- MAVLink connection button -->
   <div class="mavlink-connection-container">
       <label for="MAVLinkConnection">MAVLink Connect:</label>
-      <input type="text" id="mavlink-connect-url" class="input-field" value="ws://127.0.0.1:8765">            <!-- MAVLink connection -->
+      <input type="text" id="mavlink-connect-url" class="input-field" value="ws://127.0.0.1:8765" readonly>
       <button id="mavlink-connect-button">Connect</button>
   </div>
 
@@ -173,7 +173,6 @@
             // set up event handlers
             mavlink_ws.onopen = function() {
                 mavlink_set_connect_state(true);
-                add_text_to_debug("WebSocket CONNECTED successfully!");
             };
             mavlink_ws.onclose = function() {
                 mavlink_set_connect_state(false);
@@ -182,103 +181,99 @@
                 mavlink_disconnect();
             };
 
-            // Replace your onmessage handler with this for better debugging:
-            // mavlink_ws.onmessage = (msg) => {
 
-            //     if (MAVLink == null) {
-            //         return;
-            //     }
-
-            //     // Debug data type
-            //     // add_text_to_debug("⚡ Received data type: " + typeof(msg.data));
-            //     // add_text_to_debug("msg is: "+msg.data);
-                
-            //     // Handle different data types
-            //     let dataArray;
-            //     if (typeof msg.data === 'string') {
-            //         // add_text_to_debug("String data received - converting to bytes");
-            //         // dataArray = new TextEncoder().encode(msg.data);
-
-            //         for (const char of new Uint8Array(msg.data)) {
-            //             add_text_to_debug("1");
-            //             const mavlink_msg = MAVLink.parseChar(char)
-            //             add_text_to_debug("2");
-            //             if ((mavlink_msg != null) && (mavlink_msg._id != -1)) {
-            //                 // got a message with a known ID
-            //                 add_text_to_debug("3");
-            //                 mavlink_msg_handler(mavlink_msg);
-            //                 add_text_to_debug("yayyy");
-            //             }
-            //         }
-
-            //     } else if (msg.data instanceof ArrayBuffer) {
-            //         dataArray = new Uint8Array(msg.data);
-            //     } else if (msg.data instanceof Blob) {
-            //         add_text_to_debug("Blob data received - reading as ArrayBuffer");
-            //         // Need to read the Blob asynchronously
-            //         const reader = new FileReader();
-            //         reader.onload = function() {
-            //             const arrayBuffer = reader.result;
-            //             const bytes = new Uint8Array(arrayBuffer);
-            //             processMavlinkBytes(bytes);
-            //         };
-            //         reader.readAsArrayBuffer(msg.data);
-            //         return;
-            //     } else {
-            //         add_text_to_debug("❌ Unknown data type received");
-            //         return;
-            //     }
-                
-            //     // processMavlinkBytes(dataArray);
-            // };
-
+            ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+            // parse incoming message and forward
             mavlink_ws.onmessage = (msg) => {
+                // sanity check parser has been created
                 if (MAVLink == null) {
                     return;
                 }
+                // add_text_to_debug(msg.data);
 
-                // Debug data type
-                // add_text_to_debug("Received data of type: " + typeof(msg.data));
-                
-                let dataArray;
-                if (typeof msg.data === 'string') {
-                    // Properly convert string to bytes
-                    // add_text_to_debug("Converting string data to bytes");
-                    const encoder = new TextEncoder();
-                    dataArray = encoder.encode(msg.data);
-                } else if (msg.data instanceof ArrayBuffer) {
-                    dataArray = new Uint8Array(msg.data);
-                } else if (msg.data instanceof Blob) {
-                    // Handle asynchronously
-                    const reader = new FileReader();
-                    reader.onload = function() {
-                        processMavlinkBytes(new Uint8Array(reader.result));
-                    };
-                    reader.readAsArrayBuffer(msg.data);
-                    return;
-                } else {
-                    add_text_to_debug("❌ Unknown data type received");
-                    return;
-                }
-                
-                // Process the bytes
-                processMavlinkBytes(dataArray);
-            };
+                const json_data = JSON.parse(msg.data);
+                // add_text_to_debug("Received: " + json_data.mavpackettype);
+                const mavlink_msg = createMavlinkMsgFromJson(json_data);
 
-            function processMavlinkBytes(bytes) {
-                // add_text_to_debug("Processing " + bytes.length + " bytes");
-                for (const byte of bytes) {
-                    const mavlink_msg = MAVLink.parseChar(byte);
-                    if (mavlink_msg && mavlink_msg._id !== -1) {
-                        // add_text_to_debug("Parsed message ID: " + mavlink_msg._id);
-                        mavlink_msg_handler(mavlink_msg);
-                    }
+                // parse message
+                if (mavlink_msg) {
+                    mavlink_msg_handler(mavlink_msg);
+                    // add_text_to_debug("done and dusted");
                 }
+                else add_text_to_debug("❌❌❌❌no msg");
+                
             }
+            //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
         }
     }
 
+    // Add this function to convert JSON to MAVLink-compatible format
+    function createMavlinkMsgFromJson(json) {
+        if (!json || !json.mavpackettype) {
+            add_text_to_debug("❌ Invalid message format");
+            return null;
+        }
+        
+        try {
+            // Create a base object that preserves all original fields
+            const result = {
+                ...json,
+                // Add required fields for mavlink_store
+                _id: getMavlinkMessageId(json.mavpackettype),
+                _header: {
+                    srcSystem: 1,  // Default system ID
+                    srcComponent: 1  // Default component ID
+                }
+            };
+            
+            // Special handling for HEARTBEAT messages
+            if (json.mavpackettype === "HEARTBEAT") {
+                // add_text_to_debug("⭐ Received heartbeat message");
+                // Store directly for quick access
+                latest_heartbeat_message = result;
+            }
+            
+            return result;
+        } catch (error) {
+            add_text_to_debug("❌ Error creating MAVLink message: " + error.message);
+            return null;
+        }
+    }
+
+    // Helper function to map common message types to IDs
+    function getMavlinkMessageId(msgType) {
+        if (msgType.toUpperCase() === "HEARTBEAT") {
+            return 0;  // Always use 0 for HEARTBEAT
+        }
+        const messageMap = {
+            "HEARTBEAT": 0,
+            "heartbeat": 0,
+            "SYS_STATUS": 1,
+            "PARAM_VALUE": 22,
+            "GPS_RAW_INT": 24,
+            "ATTITUDE": 30,
+            "GLOBAL_POSITION_INT": 33,
+            "RC_CHANNELS_RAW": 35,
+            "SERVO_OUTPUT_RAW": 36,
+            "MISSION_ITEM": 39,
+            "MISSION_REQUEST": 40,
+            "MISSION_ACK": 47,
+            "GPS_GLOBAL_ORIGIN": 49,
+            "NAV_CONTROLLER_OUTPUT": 62,
+            "RC_CHANNELS": 65,
+            "VFR_HUD": 74,
+            "COMMAND_LONG": 76,
+            "COMMAND_ACK": 77,
+            "ATTITUDE_QUATERNION": 31,
+            "LOCAL_POSITION_NED": 32,
+            "POSITION_TARGET_LOCAL_NED": 85,
+            "POSITION_TARGET_GLOBAL_INT": 87,
+            "STATUSTEXT": 253
+        };
+        
+        return messageMap[msgType] || -1;  // Return -1 for unknown types
+    }
     // disconnect from the vehicle
     function mavlink_disconnect() {
         if (mavlink_ws != null) {
@@ -295,31 +290,27 @@
             return;
         }
 
-        // Store directly if this is a heartbeat message
-        if (msg._id === 0) { // HEARTBEAT
-            latest_heartbeat_message = msg;
-            add_text_to_debug("⭐ Stored heartbeat directly: type=" + msg.type);
-        }
 
-        // Still store in mavlink_store for other functions
+        // store the message in the message store
         mavlink_store.store_message(msg);
 
         switch (msg._id) {
             case 0: // HEARTBEAT
-                //alert("custom mode:" + msg.custom_mode);
-                //alert("Got a heartbeat: " + JSON.stringify(msg));
+                // alert("custom mode:" + msg.custom_mode);
+                // add_text_to_debug("HEARTBEAT message processed in switch statement!");
+                // alert("Got a heartbeat: " + JSON.stringify(msg));
                 break;
             case 1: // SYS_STATUS
-                //alert("Got a system status: " + JSON.stringify(msg));
+                // alert("Got a system status: " + JSON.stringify(msg));
                 break;
             case 24: // GPS_RAW_INT
                 //alert("Got a GPS raw int: " + JSON.stringify(msg));
                 break;
             case 30: // ATTITUDE
-                //alert("Got an attitude: " + JSON.stringify(msg));
+                // alert("Got an attitude: " + JSON.stringify(msg));
                 break;
             case 33: // GLOBAL_POSITION_INT
-                //alert("Got a global position int: " + JSON.stringify(msg));
+                // alert("Got a global position int: " + JSON.stringify(msg));
                 break;
             case 35: // HIGHRES_IMU
                 //alert("Got a high resolution IMU: " + JSON.stringify(msg));
@@ -333,38 +324,74 @@
             case 253: // STATUSTEXT
                 //alert("Got a status text: " + JSON.stringify(msg));
                 break;
+
+            case 77: // COMMAND_ACK
+                add_text_to_debug("Got COMMAND_ACK: " + 
+                                "command=" + msg.command + 
+                                ", result=" + msg.result);
+                break;
             default:
-                //alert("Got a message id: " + JSON.stringify(msg));
+                // alert("Got a message id: " + JSON.stringify(msg));
                 break;
         }
     }
 
     // arm the vehicle
+    // function mavlink_arm_vehicle() {
+    //     if (mavlink_ws == null || mavlink_ws.readyState !== WebSocket.OPEN) {
+    //         alert("Please connect to the vehicle first");
+    //         return;
+    //     }
+    //     // construct the ARM command using COMMAND_LONG
+    //     let command_long_msg = new mavlink20.messages.command_long(
+    //         1,   // Target system ID
+    //         1,  // Target component ID
+    //         400,             // MAV_CMD_COMPONENT_ARM_DISARM (command ID 400)
+    //         1,               // Confirmation
+    //         1,               // Param1: 1 to arm, 0 to disarm
+    //         0, 0, 0, 0, 0, 0 // Unused parameters
+    //     );
+
+    //     const buffer = MAVLink.send(command_long_msg)
+    //     const uint = new Uint8Array(buffer)
+
+    //     // send the message as an ArrayBuffer over the WebSocket
+    //     if (mavlink_ws && mavlink_ws.readyState === WebSocket.OPEN) {
+    //         mavlink_ws.send(uint);
+    //         add_text_to_debug("Sent ARM command via MAVLink");
+    //     } else {
+    //         alert("WebSocket is not open. Cannot send ARM command.");
+    //     }
+    // }
+
     function mavlink_arm_vehicle() {
         if (mavlink_ws == null || mavlink_ws.readyState !== WebSocket.OPEN) {
             alert("Please connect to the vehicle first");
             return;
         }
-        // construct the ARM command using COMMAND_LONG
-        let command_long_msg = new mavlink20.messages.command_long(
-            1,   // Target system ID
-            1,  // Target component ID
-            400,             // MAV_CMD_COMPONENT_ARM_DISARM (command ID 400)
-            1,               // Confirmation
-            1,               // Param1: 1 to arm, 0 to disarm
-            0, 0, 0, 0, 0, 0 // Unused parameters
-        );
-
-        const buffer = MAVLink.send(command_long_msg)
-        const uint = new Uint8Array(buffer)
-
-        // send the message as an ArrayBuffer over the WebSocket
-        if (mavlink_ws && mavlink_ws.readyState === WebSocket.OPEN) {
-            mavlink_ws.send(uint);
-            add_text_to_debug("Sent ARM command via MAVLink");
-        } else {
-            alert("WebSocket is not open. Cannot send ARM command.");
-        }
+        
+        // Create JSON format COMMAND_LONG message for arming
+        const arm_command = {
+            "mavpackettype": "COMMAND_LONG",
+            "target_system": 1,
+            "target_component": 1,
+            "command": 400,  // MAV_CMD_COMPONENT_ARM_DISARM
+            "confirmation": 1,
+            "param1": 1,     // 1 to arm, 0 to disarm
+            "param2": 0,
+            "param3": 0,
+            "param4": 0,
+            "param5": 0,
+            "param6": 0,
+            "param7": 0
+        };
+        
+        // Send as JSON string
+        mavlink_ws.send(JSON.stringify(arm_command));
+        add_text_to_debug("Sent ARM command via MAVLink (JSON format)");
+        
+        // Listen for COMMAND_ACK in your message handler
+        add_text_to_debug("Waiting for acknowledgment...");
     }
     // attach event listener to the arm button
     document.getElementById("mavlink-arm-button").addEventListener("click", mavlink_arm_vehicle);
@@ -375,7 +402,6 @@
         debugOutput.value += text + "\n";
         debugOutput.scrollTop = debugOutput.scrollHeight;
     }
-
 </script>
 
 <script type="module">
@@ -416,6 +442,8 @@
           send_message();
       }
   })
+  // listener for send message button click
+  document.getElementById("sendMessageButton").addEventListener("click", send_message);
 
   // get openai API key (use this in API calls)
   function get_openai_api_key() {
@@ -474,13 +502,10 @@
 
       // fetch response from assistant
       let response = await get_assistant_response(userInput);
-      
-      
+
       // display assistant response
       add_text_to_chat(response, "assistant");
   }
-
-  window.send_message = send_message;
 
   //
   // methods below here interact directly with the OpenAI API
@@ -556,6 +581,7 @@
       }
   }
 
+  // create a new thread
   // returns thread id on success, null on failure
   async function create_thread() {
     // sanity check the assistant id
@@ -588,11 +614,7 @@
 
       // run the assistant
       const stream = await openai.beta.threads.runs.stream(openai_thread_id, { assistant_id: openai_assistant_id, stream: true })
-      stream.on('event', (event) => {
-        //   add_text_to_debug("Event received: " + event.event);
-          openai_event_handler.emit("event", event);
-      });
-    //   stream.on('event', (event) => openai_event_handler.emit("event", event))
+      stream.on('event', (event) => openai_event_handler.emit("event", event))
   }
 
   // handle function call from assistant
@@ -605,13 +627,13 @@
               return get_vehicle_type();
           case "get_parameter":
               // Get a vehicle parameter's value.  The full list of available parameters and their values is available using the get_all_parameters function
-              // fallthrough
+              return get_parameter(args);
           case "get_wakeup_timers":
               // Retrieves a list of all active wakeup timers. You can optionally provide a message parameter to filter timers by their associated messages. When specifying the message parameter, you can use regular expressions (regex) to match patterns within the timer messages. This is useful when you want to find timers with specific keywords or patterns in their messages. For example, to retrieve all timers containing the word 'hello', you can use the regex '.*hello.*', where the dot-star (.*) pattern matches any character sequence.
               // fallthrough
           case "get_vehicle_location_and_yaw":
               // Get the vehicle's current location including latitude, longitude, altitude above sea level and altitude above home
-              get_vehicle_location_and_yaw();
+              return get_vehicle_location_and_yaw();
           case "send_mavlink_set_position_target_global_int":
               // Send a mavlink SET_POSITION_TARGET_GLOBAL_INT message to the vehicle.  This message is the preferred way to command a vehicle to fly to a specified location or to fly at a specfied velocity
               // fallthrough
@@ -621,9 +643,10 @@
           case "get_location_plus_offset":
               // Calculate the latitude and longitude given an existing latitude and longitude and distances (in meters) North and East
               // fallthrough
+            //   return get_location_plus_offset();
           case "send_mavlink_command_int":
               // Send a mavlink COMMAND_INT message to the vehicle.  Available commands including changing the flight mode, arming, disarming, takeoff and commanding the vehicle to fly to a specific location
-              // fallthrough
+              return send_mavlink_command_int(args);
           case "get_location_plus_dist_at_bearing":
               // Calculate the latitude and longitude given an existing latitude and longitude and a distance in meters and a bearing in degrees
               // fallthrough
@@ -645,10 +668,10 @@
               return getFormattedDate();
           case "get_mode_mapping":
               // Get a list of mode names to mode numbers available for this vehicle.  If the name or number parameter is provided only that mode's name and number will be returned.  If neither name nor number is provided the full list of available modes will be returned
-              // fallthrough
+              return get_mode_mapping(args);
           case "get_all_parameters":
               // Get all available parameter names and values
-              // fallthrough
+              return get_all_parameters();
           case "set_wakeup_timer":
               // Set a timer to wake you up in a specified number of seconds in the future.  This allows taking actions in the future.  The wakeup message will appear with the user role but will look something like WAKEUP:<message>.  Multiple wakeup messages are supported
               add_text_to_debug("Unknown function: " + name);
@@ -663,7 +686,6 @@
 
     // function calls below here
     // returns "Copter", "Plane", "Rover", "Boat", etc or "Unknown"
-
     function get_vehicle_type() {
 
         // get the latest HEARTBEAT message and perform a sanity check
@@ -735,54 +757,366 @@
       return new Date().toLocaleString('en-US', options);
   }
 
-  // Add this function alongside your other function implementations
-  function get_vehicle_state() {
-        // Get the latest HEARTBEAT message
-        let heartbeat_msg = mavlink_store.get_latest_message(0);
-        if (!heartbeat_msg) {
-            return JSON.stringify({
-                armed: false,
-                mode: 0
-            });
-        }
-
-
-        function get_vehicle_location_and_yaw() {
-            // Get the latest GLOBAL_POSITION_INT message
-            let position_msg = mavlink_store.get_latest_message(33);
-            if (!position_msg) {
-                return JSON.stringify({
-                    error: "No position information available"
-                });
-            }
-            
-            // Extract coordinates (convert from degE7 to decimal degrees)
-            const lat = position_msg.lat / 1e7;
-            const lon = position_msg.lon / 1e7;
-            const alt_msl = position_msg.alt / 1000;  // mm to meters
-            const alt_relative = position_msg.relative_alt / 1000;  // mm to meters
-            
-            return JSON.stringify({
-                latitude: lat,
-                longitude: lon,
-                altitude_msl: alt_msl,
-                altitude_relative: alt_relative,
-                heading: position_msg.hdg / 100  // centi-degrees to degrees
-            });
-        }
-        
-        // Get armed status
-        const armed = heartbeat_msg.base_mode & mavlink20.MAV_MODE_FLAG_SAFETY_ARMED ? true : false;
-        
-        // Get current mode
-        const mode_number = heartbeat_msg.custom_mode;
-        
+  function get_vehicle_location_and_yaw() {
+    // Get the latest GLOBAL_POSITION_INT message
+    const position_msg = mavlink_store.get_latest_message(33);
+    add_text_to_debug(position_msg);
+    if (!position_msg) {
         return JSON.stringify({
-            armed: armed,
-            mode: mode_number
+            error: "No position information available"
         });
     }
+    
+    // Get the latest ATTITUDE message for yaw (if available)
+    const attitude_msg = mavlink_store.get_latest_message(30);
+    
+    // Convert lat/lon from int32 (degE7) to decimal degrees
+    const lat = position_msg.lat / 10000000.0;
+    const lon = position_msg.lon / 10000000.0;
+    
+    // Create the response object
+    const response = {
+        latitude: lat,
+        longitude: lon,
+        altitude_msl: position_msg.alt / 1000.0,         // mm to meters
+        altitude_relative: position_msg.relative_alt / 1000.0,  // mm to meters
+        heading: position_msg.hdg / 100.0                // centi-degrees to degrees
+    };
+    
+    // Add attitude information if available
+    if (attitude_msg) {
+        response.yaw = attitude_msg.yaw * (180 / Math.PI);  // radians to degrees
+    }
+    
+    return JSON.stringify(response);
+}
 
+function get_all_parameters() {
+    // Get all PARAM_VALUE messages from the mavlink store
+    // First check if any parameters are available
+    let param_message = mavlink_store.get_latest_message(22); // 22 is PARAM_VALUE
+    if (!param_message) {
+        return JSON.stringify({
+            error: "No parameters available. Parameters haven't been received from the vehicle yet."
+        });
+    }
+    
+    // We need to collect all parameters by iterating through stored messages
+    // This is a simplification - in a real system you'd have a parameter cache
+    let param_list = {};
+    
+    // Get all available systems and components
+    const systems = Object.keys(mavlink_store.store);
+    for (const sysid of systems) {
+        const components = Object.keys(mavlink_store.store[sysid]);
+        for (const compid of components) {
+            // Check if there are any PARAM_VALUE messages for this system/component
+            if (mavlink_store.store[sysid][compid][22]) {
+                // For each parameter, add it to our list
+                // Note: This only gets the latest parameter value
+                const param = mavlink_store.store[sysid][compid][22];
+                if (param.param_id) {
+                    param_list[param.param_id] = param.param_value;
+                }
+            }
+        }
+    }
+    
+    // If no parameters were found, return an error
+    if (Object.keys(param_list).length === 0) {
+        return JSON.stringify({
+            error: "No parameters found in MAVLink store"
+        });
+    }
+    
+    // Return the parameter list as a JSON string
+    return JSON.stringify(param_list);
+}
+
+function get_parameter(args) {
+    // Parse arguments if needed
+    if (typeof args === 'string') {
+        try {
+            args = JSON.parse(args);
+        } catch (e) {
+            return JSON.stringify({ error: "Invalid arguments format" });
+        }
+    }
+    
+    const param_name = args.name;
+    if (!param_name) {
+        return JSON.stringify({ error: "Parameter name not specified" });
+    }
+    
+    // Check if we have any parameters
+    let param_message = mavlink_store.get_latest_message(22); // 22 is PARAM_VALUE
+    if (!param_message) {
+        return JSON.stringify({ 
+            error: "No parameters available. Parameters haven't been received from the vehicle yet." 
+        });
+    }
+    
+    // Check if it's a regex pattern
+    const is_regex_pattern = /[.*+?^${}()|[\]\\]/.test(param_name);
+    
+    if (is_regex_pattern) {
+        // For regex matches, we need to check all stored parameters
+        try {
+            const regex = new RegExp(param_name);
+            const allParamsStr = get_all_parameters();
+            const allParams = JSON.parse(allParamsStr);
+            
+            if (allParams.error) {
+                return JSON.stringify({ error: allParams.error });
+            }
+            
+            // Filter parameters by regex
+            const matches = {};
+            for (const [name, value] of Object.entries(allParams)) {
+                if (regex.test(name)) {
+                    matches[name] = value;
+                }
+            }
+            
+            if (Object.keys(matches).length === 0) {
+                return JSON.stringify({ error: "No parameters match pattern: " + param_name });
+            }
+            
+            return JSON.stringify(matches);
+        } catch (error) {
+            return JSON.stringify({ error: "Error processing regex: " + error.message });
+        }
+    } else {
+        // For direct parameter name matching
+        const systems = Object.keys(mavlink_store.store);
+        for (const sysid of systems) {
+            const components = Object.keys(mavlink_store.store[sysid]);
+            for (const compid of components) {
+                if (mavlink_store.store[sysid][compid][22]) {
+                    const param = mavlink_store.store[sysid][compid][22];
+                    if (param.param_id === param_name) {
+                        const result = {};
+                        result[param_name] = param.param_value;
+                        return JSON.stringify(result);
+                    }
+                }
+            }
+        }
+        
+        return JSON.stringify({ error: "Parameter not found: " + param_name });
+    }
+}
+
+function get_vehicle_state() {
+    // Get the latest HEARTBEAT message
+    let heartbeat_msg = mavlink_store.get_latest_message(0);
+    if (!heartbeat_msg) {
+        return JSON.stringify({
+            armed: false,
+            mode: 0,
+            error: "No HEARTBEAT message received"
+        });
+    }
+    
+    // Extract armed status (base_mode bit 7 is the armed flag)
+    // In MAVLink, the armed status is in bit 7 (128) of the base_mode field
+    const base_mode = heartbeat_msg.base_mode || 0;
+    const custom_mode = heartbeat_msg.custom_mode || 0;
+    const armed = (base_mode & 128) !== 0;  // Check if bit 7 is set
+    
+    return JSON.stringify({
+        armed: armed,
+        mode: custom_mode
+    });
+}
+
+function get_mode_mapping(args) {
+    // Parse arguments if string
+    if (typeof args === 'string') {
+        try {
+            args = JSON.parse(args);
+        } catch (e) {
+            return JSON.stringify({ error: "Invalid arguments format" });
+        }
+    }
+    
+    // Get mode_name and mode_number from arguments
+    const mode_name = args?.name?.toUpperCase();
+    const mode_number = args?.number !== undefined ? parseInt(args.number) : undefined;
+    
+    // Get vehicle type to determine which mode mapping to use
+    const vehicle_type = get_vehicle_type();
+    
+    // Define mode mappings for different vehicle types
+    const mode_mappings = {
+        "Copter": {
+            "STABILIZE": 0,
+            "ACRO": 1,
+            "ALT_HOLD": 2,
+            "AUTO": 3,
+            "GUIDED": 4,
+            "LOITER": 5,
+            "RTL": 6,
+            "CIRCLE": 7,
+            "POSITION": 8,
+            "LAND": 9,
+            "DRIFT": 11,
+            "SPORT": 13,
+            "FLIP": 14,
+            "AUTOTUNE": 15,
+            "POSHOLD": 16,
+            "BRAKE": 17,
+            "THROW": 18,
+            "AVOID_ADSB": 19,
+            "GUIDED_NOGPS": 20,
+            "SMART_RTL": 21,
+            "FLOWHOLD": 22,
+            "FOLLOW": 23,
+            "ZIGZAG": 24,
+            "SYSTEMID": 25,
+            "AUTOROTATE": 26
+        },
+        "Plane": {
+            "MANUAL": 0,
+            "CIRCLE": 1,
+            "STABILIZE": 2,
+            "TRAINING": 3,
+            "ACRO": 4,
+            "FBWA": 5,
+            "FBWB": 6,
+            "CRUISE": 7,
+            "AUTOTUNE": 8,
+            "AUTO": 10,
+            "RTL": 11,
+            "LOITER": 12,
+            "TAKEOFF": 13,
+            "AVOID_ADSB": 14,
+            "GUIDED": 15,
+            "INITIALIZING": 16,
+            "QSTABILIZE": 17,
+            "QHOVER": 18,
+            "QLOITER": 19,
+            "QLAND": 20,
+            "QRTL": 21,
+            "QAUTOTUNE": 22,
+            "QACRO": 23
+        },
+        "Rover": {
+            "MANUAL": 0,
+            "ACRO": 1,
+            "STEERING": 3,
+            "HOLD": 4,
+            "LOITER": 5,
+            "FOLLOW": 6,
+            "SIMPLE": 7,
+            "AUTO": 10,
+            "RTL": 11,
+            "SMART_RTL": 12,
+            "GUIDED": 15
+        }
+    };
+    
+    // Get modes for the current vehicle type
+    const modes = mode_mappings[vehicle_type] || {};
+    
+    // Create result array
+    let mode_list = [];
+    
+    // Handle request based on provided arguments
+    if (mode_name === undefined && mode_number === undefined) {
+        // Return all modes
+        for (const [name, number] of Object.entries(modes)) {
+            mode_list.push({ name, number });
+        }
+    } else if (mode_name !== undefined) {
+        // Find mode by name
+        for (const [name, number] of Object.entries(modes)) {
+            if (name === mode_name) {
+                mode_list.push({ name, number });
+                break;
+            }
+        }
+    } else if (mode_number !== undefined) {
+        // Find mode by number
+        for (const [name, number] of Object.entries(modes)) {
+            if (number === mode_number) {
+                mode_list.push({ name, number });
+                break;
+            }
+        }
+    }
+    
+    return JSON.stringify(mode_list);
+}
+
+function send_mavlink_command_int(args) {
+    // Parse arguments if needed
+    if (typeof args === 'string') {
+        try {
+            args = JSON.parse(args);
+        } catch (e) {
+            return JSON.stringify({ error: "Invalid arguments format" });
+        }
+    }
+    
+    // Validate required arguments
+    if (!args.command) {
+        return JSON.stringify({ error: "command_int not sent. command field required" });
+    }
+    
+    // Check websocket connection
+    if (mavlink_ws == null || mavlink_ws.readyState !== WebSocket.OPEN) {
+        return JSON.stringify({ error: "WebSocket not connected. Please connect to vehicle first." });
+    }
+    
+    // Set default values for optional arguments
+    const target_system = args.target_system || 1;
+    const target_component = args.target_component || 1;
+    const frame = args.frame || 0;
+    const command = args.command;
+    const current = args.current || 0;
+    const autocontinue = args.autocontinue || 0;
+    const param1 = args.param1 || 0;
+    const param2 = args.param2 || 0;
+    const param3 = args.param3 || 0;
+    const param4 = args.param4 || 0;
+    const x = args.x || 0;
+    const y = args.y || 0;
+    const z = args.z || 0;
+    
+    // Specific command validations
+    if (command === 22 && z === 0) { // MAV_CMD_NAV_TAKEOFF = 22
+        return JSON.stringify({ error: "command_int not sent. MAV_CMD_NAV_TAKEOFF requires alt in z field" });
+    }
+    
+    // Create command_int message
+    const command_int_msg = {
+        "mavpackettype": "COMMAND_INT",
+        "target_system": target_system,
+        "target_component": target_component,
+        "frame": frame,
+        "command": command,
+        "current": current,
+        "autocontinue": autocontinue,
+        "param1": param1,
+        "param2": param2,
+        "param3": param3,
+        "param4": param4,
+        "x": x,
+        "y": y,
+        "z": z
+    };
+    
+    // Send command
+    add_text_to_debug("Sending COMMAND_INT: " + JSON.stringify(command_int_msg));
+    mavlink_ws.send(JSON.stringify(command_int_msg));
+    
+    // In a more sophisticated implementation, we would wait for the COMMAND_ACK
+    // This simplified version just returns that the command was sent
+    return JSON.stringify({
+        result: "command_int sent, check debug output for acknowledgment"
+    });
+}
 
   class EventHandler extends EventEmitter {
         constructor(client) {
